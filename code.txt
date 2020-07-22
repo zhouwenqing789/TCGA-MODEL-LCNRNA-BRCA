@@ -1,0 +1,880 @@
+rm(list = ls())
+setwd("C:\\Users\\zhouwenqing789\\Desktop\\乳腺癌TCGA数据库20191226\\coxmodel_all_data")
+###样本合并
+x_merge=NULL
+a<-list.files()
+for(n in a){x=read.delim(n,col.names=c("ID",substr(n,1,8)))  #样本名取前8位，便于后边更换样本
+if(is.null(x_merge)){x_merge=x
+}
+else{x_merge=merge(x_merge,x,by="ID")}
+}
+x_merge<-x_merge[-c(1:5),]
+save(x_merge,file = "C:\\Users\\zhouwenqing789\\Desktop\\乳腺癌TCGA数据库20191226\\预测模型课件\\x_merge.Rdata")
+load(file = "C:\\Users\\zhouwenqing789\\Desktop\\乳腺癌TCGA数据库20191226\\coxmodel_all_data\\x_merge.Rdata")
+##读取json文件并更改合并后的列名为样本名
+library(rjson)
+metadata<-fromJSON(file = "C:\\Users\\zhouwenqing789\\Desktop\\乳腺癌TCGA数据库20191226\\metadata.cart.2019-12-26.json")
+x<-metadata
+###确保文件名都是按照顺序（order）排列的
+length(x)
+x[[1]]
+n=length(x)
+id=NULL
+sample_id=NULL
+for (i in 1:n) {
+  id[i]=x[[i]]$submitter_id
+  sample_id[i]=x[[i]]$associated_entities[[1]]$entity_submitter_id
+}
+exchangename=data.frame(id,sample_id)
+id=substr(id,1,8)
+sample_id=substr(sample_id,1,16)
+exchangename=exchangename[order(exchangename$id),]
+nrow(exchangename)
+ncol(x_merge)
+x_merge1<-x_merge[,-1]
+colnames(x_merge1)=exchangename$sample_id
+rownames(x_merge1)<-x_merge$ID
+count_matrix<-x_merge1
+save(count_matrix,file = "count_matrix.Rdata")
+load(file ="C:\\Users\\zhouwenqing789\\Desktop\\乳腺癌TCGA数据库20191226\\coxmodel_all_data\\count_matrix.Rdata" )
+##提取LncRNA数据以及长度
+##读入gff3文件
+genecode<-read.table(file = "C:\\Users\\zhouwenqing789\\Desktop\\乳腺癌TCGA数据库20191226\\基因注释文件\\gencode.v22.long_noncoding_RNAs.gff3" )
+g_len<-genecode[genecode[,3]=="gene",]
+annogene<-data.frame(matrix(NA,nrow(g_len),3))
+colnames(annogene)<-c("ENSG","symbol","gene_length")
+lncname<-str_split(g_len[,9],";")
+library(stringr)
+dim(annogene)
+tail(annogene)
+class(annogene)
+head(annogene)
+for(j in 1:length(lncname)){
+  annogene[j,1]=substring(lncname[[j]][1],4,)
+  annogene[j,2]=substring(lncname[[j]][5],11,)
+}
+##注意每个基因id不一样，而且其中每个转录本的id又不一样，但每个转录本下的外显子id一样，给了我们提取外显子的思路
+##首先选出一个基因id下的所有外显子和转录本（共一个基因id）,再根据转录本id,选取相应的一个转录本和外显子，再删除转录本。
+ci<-1
+for(len in 1:as.numeric(length(annogene[,1]))){
+  ll<-str_detect(genecode[,9],annogene[len,1])
+  llen<-genecode[ll,]
+  llen<-llen[llen[,3]!="gene",]
+  lnc_n<-str_split(llen[1,9],";")
+  t_name<-substring(lnc_n[[1]][1],4,)
+  befor_len<-genecode[str_detect(genecode[,9],t_name),][-1,c(4:5)]
+  g_length<-sum(befor_len[,2]-befor_len[,1])
+  annogene[len,3]<-g_length
+  if(ci%%100==0){
+    print(paste("获得了",ci,"个lncrna",sep=""))
+  }     
+  ci=ci+1
+}
+write.csv(annogene,file = "C:\\Users\\zhouwenqing789\\Desktop\\乳腺癌TCGA数据库20191226\\annogenelncrna.csv",row.names = F, quote = F)
+annogenelncrna<-read.csv(file = "C:\\Users\\zhouwenqing789\\Desktop\\乳腺癌TCGA数据库20191226\\基因注释文件\\annogenelncrna.csv",header=T)
+###提取LncRNA并更改ID名
+count_matrix1<-count_matrix[rownames(count_matrix)%in%annogenelncrna$ENSG,]
+count_matrix1<-count_matrix1[order(rownames(count_matrix1)),]##一定要按顺序排列，方便后面的操作
+annogenelncrna<-annogenelncrna[order(annogenelncrna$ENSG),] ##一定要按顺序排列，方便后面的操作
+rownames(count_matrix1)<-annogenelncrna$symbol##发现重复的，需要去重复
+b<-table(annogenelncrna$symbol)
+bb<-names(b[b>1])  ##查看哪些是重复的
+count_matrix1<-cbind(rownames(count_matrix1),count_matrix1)
+count_matrix1[,1]<-as.character(annogenelncrna$symbol)
+count_matrix_lnc<-count_matrix1[!duplicated(count_matrix1$`rownames(count_matrix1)`),]
+rownames(count_matrix_lnc)<-count_matrix_lnc[,1]
+count_matrix_lnc<-count_matrix_lnc[,-1]
+##计算RPKM值
+dim(count_matrix)
+colnames(count_matrix)[1:5]##检查总数据的列名和lncRNA数据的列名是否一致。
+shendu<-apply(count_matrix,2,sum)
+annogenelncrna<-annogenelncrna[!duplicated(annogenelncrna$symbol),]
+lnc_len<-annogenelncrna$gene_length
+###一定要注意，蛋白编码基因的行顺序和基因注释文件的顺序一致，否则后面的基因长度就不能一一对应了。
+head(annogenelncrna)
+head(count_matrix_lnc)[1:2]
+count_matrix_lnc109<-count_matrix_lnc*10^9
+rpkm<-count_matrix_lnc109
+for(len in 1:ncol(rpkm)){
+  rpkm[,len]<-rpkm[,len]/shendu[len]/lnc_len
+
+}
+count_matrix_lnc_rpkm<-rpkm
+save(count_matrix_lnc_rpkm,file = "count_matrix_lnc_rpkm.Rdata")
+save(count_matrix_lnc,file = "count_matrix_lnc.Rdata")
+load(file="C:\\Users\\zhouwenqing789\\Desktop\\乳腺癌TCGA数据库20191226\\coxmodel_all_data\\count_matrix_lnc_rpkm.Rdata")
+load(file="C:\\Users\\zhouwenqing789\\Desktop\\乳腺癌TCGA数据库20191226\\coxmodel_all_data\\count_matrix_lnc.Rdata")
+##读入临床文件，将没有临床信息的基因表达矩阵删除
+options(stringsAsFactors = F)  ##记得这一步一定要做，否则后面转换数据时变成factor ,没办法操作
+clinicdata<-read.delim(file = "C:\\Users\\zhouwenqing789\\Desktop\\乳腺癌TCGA数据库20191226\\clinical.tsv",header=T,sep="\t")
+head(clinicdata)[1:10]
+needclinicdata<-clinicdata[,c(2,4,10,16,20,29,30,31,32,155)] ##提取有用的临床信息
+class(clinicdata$days_to_death)
+needclinicdata<-needclinicdata[!duplicated(needclinicdata$submitter_id),]
+count_lnc_tumor<-count_matrix_lnc[,substr(colnames(count_matrix_lnc),14,15)=="01"]
+count_lnc_normal<-count_matrix_lnc[,substr(colnames(count_matrix_lnc),14,15)=="11"]
+count_lnc_rpkm_tumor<-count_matrix_lnc_rpkm[,substr(colnames(count_matrix_lnc_rpkm),14,15)=="01"]
+count_lnc_rpkm_normal<-count_matrix_lnc_rpkm[,substr(colnames(count_matrix_lnc_rpkm),14,15)=="11"]
+dim(count_lnc_rpkm_tumor)
+freq<-table(substr(colnames(count_lnc_tumor),1,12))
+names(freq[freq>1])
+count_lnc_tumor<-count_lnc_tumor[,!duplicated(substr(colnames(count_lnc_tumor),1,12))]###去掉重复的样本
+freq1<-table(substr(colnames(count_lnc_tumor),1,12))
+names(freq1[freq1>1])
+count_lnc_rpkm_tumor<-count_lnc_rpkm_tumor[,!duplicated(substr(colnames(count_lnc_rpkm_tumor),1,12))]
+dim(count_lnc_rpkm_tumor)
+######检查是否所有的样本都有临床信息
+aa<-substr(colnames(count_lnc_rpkm_tumor),1,12)%in%needclinicdata$submitter_id###检查是否所有的样本都有临床信息
+table(aa)
+dim(needclinicdata)
+bb<-needclinicdata$submitter_id%in%substr(colnames(count_lnc_rpkm_tumor),1,12)
+table(bb)
+##发现有一个样本没有基因信息，故删除该样本的临床信息。
+needclinicdata<-needclinicdata[needclinicdata$submitter_id%in%substr(colnames(count_lnc_rpkm_tumor),1,12),]
+freq2<-table(needclinicdata$submitter_id)####检查临床信息样本是否有重复
+names(freq2[freq2>1])
+count_lnc_norep<-cbind(count_lnc_normal,count_lnc_tumor)  ##记得正常样本放前面，肿瘤样本放后面 便于后面的edgr分析
+count_lnc_rpkm_norep<-cbind(count_lnc_rpkm_normal,count_lnc_rpkm_tumor)
+freq3<-table(rownames(count_lnc_norep))##检查基因表达信息中样本是否有重复
+names(freq3[freq3>1]) 
+dim(count_lnc_norep)
+dim(count_lnc_rpkm_norep)
+count_lnc_rpkm_norep_01<-count_lnc_rpkm_norep[rowMeans(count_lnc_rpkm_norep)>0.1,]
+dim(count_lnc_rpkm_norep_01)
+count_lnc_norep_01<-count_lnc_norep[rownames(count_lnc_norep)%in%rownames(count_lnc_rpkm_norep_01),]##将RPKM平均值大于0.1的那些count挑出来
+dim(count_lnc_norep_01)
+###做差异表达分析（用edgeR,一定是count文件，不是RPKM文件）
+if(!requireNamespace("BiocManager",quietly = T))
+  install.packages("BiocManager")
+BiocManager::install("edgeR")
+library("edgeR")  ##必须用count数据，不能用rpkm数据
+##修改工作路径
+kirc_count<-count_lnc_norep_01
+kirc_count<-as.matrix(kirc_count)
+head(kirc_count)[1:5]
+class(dimnames)
+head(data)[1:10]
+dimnames<-list(rownames(kirc_count),colnames(kirc_count))######不懂，创建一个列表
+data<-matrix(as.numeric(as.matrix(kirc_count)),nrow = nrow(kirc_count),dimnames=dimnames)####不懂,创建的同count_lnc_norep_01一样
+##除掉至少在一半样本中为表达的Lncrna
+yu<-list()
+for (i in 1:nrow(data)) {
+  yu[[i]]<-sum(data[i,]==0)/ncol(data)
+}
+yu<-as.data.frame(yu)
+yu<-t(yu)
+data<-data[yu<0.5,]
+dim(normal)
+###建立tumor和normal
+tumor<-data[,substr(colnames(data),14,15)=="01"]
+normal<-data[,substr(colnames(data),14,15)=="11"]
+group<-c(rep("normal",ncol(normal)),rep("tumor",ncol(tumor)))
+##构建DGEList对象
+y<-DGEList(counts = data,group = group)
+##可选用将count转换成CPM值，我们前面删除了除掉至少在一半样本中为表达的Lncrna，故不用
+#keep_exp<-filterByExpr(y,group = group)
+#y<-y[keep_exp,keep.lib.sizes=F]
+##消除技术性影响，主要为RNA composition
+y<-calcNormFactors(y)
+###构建实验，评估全部样本和分组样本的离散量
+design<-model.matrix(~group)
+y<-estimateCommonDisp(y)
+y<-estimateTagwiseDisp(y)
+##计算差异表达Lncrna
+fit<-glmFit(y,design)
+et<-glmLRT(fit,coef = 2)  #2代表tumor和normal向比较
+order_diff_Lncrna<-topTags(et,n=100000)
+#输出具有差异的基因
+all_diff_Lncrna<-order_diff_Lncrna$table
+dim(all_diff_Lncrna)
+write.table(all_diff_Lncrna,file = "all_diff_Lncrna.txt",sep = "\t",quote = F)
+all_diff_Lncrna<-read.table(file = "C:/Users/zhouwenqing789/Desktop/乳腺癌TCGA数据库20191226/coxmodel_all_data/all_diff_Lncrna.txt",sep="\t",header=T)
+##提取满足条件的差异表达Lncrna
+alldiffFDR0001<-all_diff_Lncrna[abs(all_diff_Lncrna$logFC)>2&all_diff_Lncrna$FDR<0.001,]
+dim(alldiffFDR0001)
+diffupLncRNA<-alldiffFDR0001[alldiffFDR0001$logFC>2,]
+diffdownLncRNA<-alldiffFDR0001[alldiffFDR0001$logFC<2,]
+dim(diffdownLncRNA)
+##输出差异表达有意义的基因的RPKM值
+difflncrna_rpkm<-count_lnc_rpkm_norep_01[rownames(count_lnc_rpkm_norep_01)%in%rownames(alldiffFDR0001),]
+write.csv(difflncrna_rpkm,file = "difflncrna_rpkm.csv",row.names = T,col.names = T,quote = F)
+save(difflncrna_rpkm,file = "difflncrna_rpkm.Rdata")
+load(file = "C:\\Users\\zhouwenqing789\\Desktop\\乳腺癌TCGA数据库20191226\\coxmodel_all_data\\cox模型数据\\difflncrna_rpkm.Rdata")
+
+#输出火山图
+cut_off_FDR=0.001#设定阈值
+cut_off_logFC=2
+##根据阈值分别为上调的基因设置UP，down,stable,并保存到change列
+all_diff_Lncrna$change=ifelse(all_diff_Lncrna$FDR<cut_off_FDR&abs(all_diff_Lncrna$logFC)>=cut_off_logFC,
+                              ifelse(all_diff_Lncrna$logFC>cut_off_logFC,"up","down"),"stable")
+ggplot(all_diff_Lncrna,aes(x=logFC,y=-log(FDR),color=change))+
+  geom_point(alpha=0.4,size=3.5)+
+  scale_color_manual(values=c("blue","grey","red"))+
+  ##辅助线
+  geom_vline(xintercept = c(-2,2),lty=4,col="black",lwd=0.8)+
+  geom_hline(yintercept = -log10(0.001),lty=4,col="black",lwd=0.8)+
+  labs(title = "volcanoplot",x="log2(fold change)",y="-log10(FDR)")+
+  theme_bw()+
+  #图例
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "right",
+        legend.title = element_blank())
+
+head(needclinicdata)[,1:10]
+head(difflncrna_rpkm1)[,1:10]
+coxdataclinic<-needclinicdata[,c(1,5,3)]
+difflncrna_rpkm22<-difflncrna_rpkm[,substr(colnames(difflncrna_rpkm),14,15)=="01"] ##生存分析需要删除正常样本
+colnames(difflncrna_rpkm22)<-substr(colnames(difflncrna_rpkm22),1,12)
+ff<-table(substr(colnames(difflncrna_rpkm22),1,12))  #再次检查是否有重复
+names(ff[ff>1])
+difflncrna_rpkm23<-t(difflncrna_rpkm22)
+fff<-table(rownames(difflncrna_rpkm23))
+names(fff[fff>1])
+##构建RPKM值的cox模型数据。提取临床信息和基因在样本中的表达，并合并。
+coxdataclinic1<-coxdataclinic[order(coxdataclinic$submitter_id),]
+difflncrna_rpkm24<-difflncrna_rpkm23[order(rownames(difflncrna_rpkm23)),]
+####更改基因名为系列号码，因为后面多因素分析时发现，有的基因名前面加了引号，有的没有，没办法提取相关的列
+bbbb<-paste("A",1:521,sep="_")                                                 
+changgenename<-data.frame(colnames(difflncrna_rpkm24),bbbb)
+colnames(difflncrna_rpkm24)<-changgenename$bbbb              #做森林图时 这一步不操作 （重新来一遍）
+save(changgenename,file = "changgenename.Rdata")              #做森林图时 这一步不操作 （重新来一遍）
+coxdatarpkm<-cbind(coxdataclinic1,difflncrna_rpkm24)###合并数据
+rownames(coxdatarpkm)<-coxdatarpkm$submitter_id
+coxdatarpkm1<-coxdatarpkm[,-1]
+sigcoxdata<-coxdatarpkm1
+class(sigcoxdata)
+dim(sigcoxdata)
+class(sigcoxdata[,3])
+as.numeric(sigcoxdata[,2])
+sigcoxdata[,2]<-ifelse(is.na(as.numeric(sigcoxdata[,2])),7455,as.numeric(sigcoxdata[,2]))
+sigcoxdata[,2]<-sigcoxdata[,2]/365
+sigcoxdata[,1]<-ifelse(sigcoxdata$vital_status=="Alive",0,1)
+sigcoxdata[,c(3:ncol(sigcoxdata))]<-log2(sigcoxdata[,c(3:ncol(sigcoxdata))]+0.1)###cox模型要正态分布的数据，故Log
+colnames(sigcoxdata)[1]<-"status"
+colnames(sigcoxdata)[2]<-"life_span"
+library(survivalROC)
+library(survival)
+library(survminer)
+cc<-1
+pp<-1
+lengt<-3099
+library("rms")
+for(k in 1:1000000){
+  set.seed(3620)
+  load(file = "E:\\coxsample.Rdata")
+  load(file = "E:\\sigcox.Rdata")
+  ##trainsam<-sample(rownames(sigcoxdata),(length(rownames(sigcoxdata))+1)/2)
+  ##trainsam1<-rownames(sigcoxdata)%in%trainsam
+  coxtrain<-sigcoxdata[trainsam1,]
+  coxtest<-sigcoxdata[!trainsam1,]
+  ###直接总数据分析 coxtrain<-sigcoxdata
+  ###单因素回归分析
+  library(survival)
+  univar4_out<-data.frame(matrix(NA,(ncol(coxtrain)-2),5))
+  rownames(univar4_out)<-colnames(coxtrain)[-c(1:2)]
+  colnames(univar4_out)<-c("Coeffcient","HR","lower.95","upper.95","P-Value")
+  for (i in colnames(coxtrain)[-c(1:2)]) {
+    cox<-coxph(Surv(life_span,status)~coxtrain[,i],data = coxtrain)
+    cox4_summary<-summary(cox)
+    univar4_out[i,1]<-cox4_summary$coefficients[,1]
+    univar4_out[i,2]<-cox4_summary$coefficients[,2]
+    univar4_out[i,3]<-cox4_summary$conf.int[,3]
+    univar4_out[i,4]<-cox4_summary$conf.int[,4]
+    univar4_out[i,5]<-cox4_summary$coefficients[,5]
+  }
+  uni001<-univar4_out[univar4_out$`P-Value`<0.01,]
+  uni005<-univar4_out[univar4_out$`P-Value`<0.05,]
+
+  ###多因素回归并建模
+  siggenename<-rownames(uni005)
+  ###siggenename<-as.factor(rownames(uni005))
+  coxmultidata<-cbind(coxtrain[,c(1,2)],coxtrain[,siggenename])
+  coxmulti<-coxph(Surv(life_span,status)~.,data = coxmultidata)
+  cox_model<-step(coxmulti,direction = "both")
+
+  cox_model
+  cox_sum<-summary(cox_model)
+
+  ###calibrate验证曲线
+  cox_3years <- cph(Surv(life_span,status) ~.,surv=T,x=T, y=T,time.inc=1*3,data=coxmultidata)
+  cal_3<-calibrate(cox_3years,cmethod = "KM",method = "boot",u=1*3,m=150,B=1000)##m值根据样本总数/3的值的整数，但必须有余数
+  cox_5years <- cph(Surv(life_span,status) ~.,surv=T,x=T, y=T,time.inc=1*5,data=coxmultidata)
+  cal_5<-calibrate(cox_5years,cmethod = "KM",method = "boot",u=1*5,m=150,B=1000)##m值根据样本总数/3的值的整数，但必须有余数
+  plot(cal_3,xlim = c(0.7,1),ylim = c(0.7,1),xlab ="Model Predicted Survival 3 year",ylab="Actual Survival 3 year",col="blue")
+  plot(cal_5,xlim = c(0.7,1),ylim = c(0.7,1),xlab ="Model Predicted Survival 5 year",ylab="Actual Survival 5 year",col="red")
+  pdf("calibrate10.pdf",12,8)
+  par(mar = c(10,5,3,2),cex = 1.0)
+  plot(cal_3)
+  plot(cal_3,lwd=3,lty=2,errbar.col="black",xlim = c(0.7,1),ylim = c(0.7,1),xlab ="Model Predicted Survival(3 year)",ylab="Actual Survival(3 year)",col="blue")
+  plot(cal_5,lwd=3,lty=2,errbar.col="red",xlim = c(0.7,1),ylim = c(0.7,1),xlab ="Model Predicted Survival(5 year)",ylab="Actual Survival(5 year)",col="red")
+  lines(cal_3,c("mean.predicted","KM"),type = "a",lwd=3,col="black",pch=16)###有问题
+  mtext(" ")##有问题
+  box(lwd=1)#有问题
+  abline(0.7,1,lty=3,lwd=3,col="black")#有问题
+  dev.off()
+  ###将两个校正曲线放在一张图上
+  p1<-plot(cal_3,lwd=3,lty=2,errbar.col="black",xlim = c(0.7,1),ylim = c(0.7,1),xlab ="Model Predicted Survival",ylab="Actual Survival",col="blue")
+  par(new=TRUE)
+  p2<-plot(cal_5,lwd=3,lty=2,errbar.col="red",xlim = c(0.7,1),ylim = c(0.7,1),xlab ="Model Predicted Survival",ylab="Actual Survival",col="red")
+
+
+  ###cox_sum 中的Concordance=0.713 即为C-index
+  c_index_1<-cox_sum$concordance
+  c_index<-c_index_1[1]
+  c_index_low<-c_index-c_index_1[2]
+  c_index_high<-c_index+c_index_1[2]
+
+
+  ###C-index 应用
+  ###library(Hmisc)
+  ### cindex<-1-rcorr.cens(coxtrainscore,Surv(as.numeric(life_span),status))[[1]]##但运行并不成功
+
+  multivar4_out<-data.frame(matrix(NA,length(rownames(cox_sum$coefficients)),5))
+  rownames(multivar4_out)<-rownames(cox_sum$coefficients)
+  colnames(multivar4_out)<-c("Coeffcient","HR","lower.95","upper.95","P-Value")
+  multivar4_out[,1]<-cox_sum$coefficients[,1]
+  multivar4_out[,2]<-cox_sum$coefficients[,2]
+  multivar4_out[,3]<-cox_sum$conf.int[,3]
+  multivar4_out[,4]<-cox_sum$conf.int[,4]
+  multivar4_out[,5]<-cox_sum$coefficients[,5]
+  coxgenename<-rownames(multivar4_out)
+  ##保存模型write.csv(multivar4_out,file = "10genemodel.csv",row.names = T,quote = F)
+  #######根据模型将数据分为high,low.并制作生存曲线
+
+  coxtraindata<-cbind(coxtrain[,c(1,2)],coxtrain[,coxgenename])
+  coxtrainscore<-predict(cox_model,type = "risk",newdata = coxtraindata)
+  coxrisk<-as.vector(ifelse(coxtrainscore>median(coxtrainscore),"high","low"))
+  trainriskdata<-cbind(coxtrain[,c(1,2)],coxtrainscore,coxrisk)
+  colnames(trainriskdata)<-c("status","life_span","riskscore","risk")
+
+  ###做多因素模型森林图
+  #library(survminer)
+  #ggforest(cox_model,data=coxmultidata,main = "Hazard ratio",cpositions = c(0.02,0.22, 0.4), fontsize = 0.7, refLabel = "reference", noDigits = 2)
+
+  ##生存分析
+  diff_train<-survdiff(Surv(life_span,status)~risk,data = trainriskdata)
+  #p_valuetrain<-signif((1 - pchisq(diff_train$chisq,df=1)),3)
+  #p_valuetrain
+  #fit_curve_train<-survfit(Surv(life_span,status)~risk,data = trainriskdata)##生存曲线做图
+  #plot(fit_curve_train,col=c("red","blue"),xlab = "time(years)",ylab = "survival rate",
+  main="survival curve of training set",mark.time=T)
+#legend(2,.4,paste("High risk (n=",nrow(trainriskdata[trainriskdata[,4]=="high",]),")",sep = ""),lty = NULL,text.col = "red",bty = "n")
+#legend(2,.3,paste("Low risk (n=",nrow(trainriskdata[trainriskdata[,4]=="low",]),")",sep = ""),lty = NULL,text.col = "blue",bty = "n")
+#legend(15,.2,paste("P value =",p_valuetrain,sep = ""),lty = NULL,col = "black",bty = "n")
+##绘制ROC曲线
+library(survivalROC)
+roctrain<-survivalROC(Stime = trainriskdata$life_span,status = trainriskdata$status,marker = trainriskdata$riskscore,
+                      predict.time = 5,method = "KM")
+#par(oma=c(0.5,1,0,1),font.lab=1.5,font.axis=1.5)
+#plot(roctrain$FP, roctrain$TP, type="l", xlim=c(0,1), ylim=c(0,1),col='red',
+xlab="1-Specificity",ylab="Sensitivity",main=paste("training set ROC curve (AUC = 0.746)")
+)
+#abline(0,1)
+roctrain$AUC
+##3年5年ROC曲线
+library(tidyverse)
+library(survivalROC)
+survivalROC_helper<-function(t){survivalROC(Stime = trainriskdata$life_span,status = trainriskdata$status,marker = trainriskdata$riskscore,
+                                            predict.time = t,method = "KM")}
+survivalROC_data<-data_frame(t=c(3,5))%>%
+  mutate(survivalROC=map(t,survivalROC_helper),
+        auc=map_dbl(survivalROC,magrittr::extract2,"AUC"),
+        df_survivalROC=map(survivalROC,function(obj){
+          as.data.frame(obj[c("cut.values","TP","FP")])
+        }))%>%
+  dplyr::select(-survivalROC)%>%unnest()%>%arrange(t,FP,TP)
+survivalROC_data1<-survivalROC_data%>%mutate(auc=sprintf("%.3f",auc))%>%
+  unite(year,t,auc,sep = "year AUC: ")
+AUC=factor(survivalROC_data1$year)
+survivalROC_data1%>%ggplot(mapping = aes(x=FP,y=TP))+
+  geom_path(aes(colour=AUC))+
+  geom_abline(intercept = 0,slope = 1,linetype="dashed")+
+  theme_bw()+
+  theme(legend.position = c(0.8,0.2))
+library(ggplot2)
+
+###测试集检测结果
+coxtestdata<-cbind(coxtest[,1:2],coxtest[,coxgenename])
+coxtestscore<-predict(cox_model,type = "risk",newdata = coxtestdata)
+coxtestrisk<-as.vector(ifelse(coxtestscore>median(coxtrainscore),"high","low"))
+testriskdata<-cbind(coxtestdata[,c(1,2)],coxtestscore,coxtestrisk)
+colnames(testriskdata)<-c("status","life_span","riskscore","risk")
+##测试集生存分析和ROC曲线
+diff_test<-survdiff(Surv(life_span,status)~risk,data = testriskdata)
+p_valuetest<-signif((1 - pchisq(diff_test$chisq,df=1)),3)
+p_valuetest
+#fit_curve_test<-survfit(Surv(life_span,status)~risk,data = testriskdata)##生存曲线做图
+#plot(fit_curve_test,col=c("red","blue"),xlab = "time(years)",ylab = "survival rate",
+main="survival curve of testing set",mark.time=T)
+#legend(2,.4,paste("High risk (n=",nrow(testriskdata[testriskdata[,4]=="high",]),")",sep = ""),lty = NULL,text.col = "red",bty = "n")
+#legend(2,.3,paste("Low risk (n=",nrow(testriskdata[testriskdata[,4]=="low",]),")",sep = ""),lty = NULL,text.col = "blue",bty = "n")
+#legend(14,.2,paste("P value =",p_valuetest,sep = ""),lty = NULL,col = "black",bty = "n")
+roctest<-survivalROC(Stime = testriskdata$life_span,status = testriskdata$status,marker = testriskdata$riskscore,
+                    predict.time = 5,method = "KM")
+#par(oma=c(0.5,1,0,1),font.lab=1.5,font.axis=1.5)
+#plot(roctest$FP, roctest$TP, type="l", xlim=c(0,1), ylim=c(0,1),col='red',
+xlab="1-Specificity",ylab="Sensitivity",main=paste("testing set ROC curve (AUC = 0.717)")
+)
+#abline(0,1)
+roctest$AUC
+###测试集3年五年ROC曲线=======================================
+survivalROC_helper<-function(t){survivalROC(Stime = testriskdata$life_span,status = testriskdata$status,marker = testriskdata$riskscore,
+                                            predict.time = t,method = "KM")}
+survivalROC_data<-data_frame(t=c(3,5))%>%
+  mutate(survivalROC=map(t,survivalROC_helper),
+        auc=map_dbl(survivalROC,magrittr::extract2,"AUC"),
+        df_survivalROC=map(survivalROC,function(obj){
+          as.data.frame(obj[c("cut.values","TP","FP")])
+        }))%>%
+  dplyr::select(-survivalROC)%>%unnest()%>%arrange(t,FP,TP)
+survivalROC_data1<-survivalROC_data%>%mutate(auc=sprintf("%.3f",auc))%>%
+  unite(year,t,auc,sep = "year AUC: ")
+AUC=factor(survivalROC_data1$year)
+survivalROC_data1%>%ggplot(mapping = aes(x=FP,y=TP))+
+  geom_path(aes(colour=AUC))+
+  geom_abline(intercept = 0,slope = 1,linetype="dashed")+
+  theme_bw()+
+  theme(legend.position = c(0.8,0.2))
+###总集
+coxalldata<-cbind(sigcoxdata[,1:2],sigcoxdata[,coxgenename])
+coxallscore<-predict(cox_model,type = "risk",newdata = coxalldata)
+coxallrisk<-as.vector(ifelse(coxallscore>median(coxtrainscore),"high","low"))
+allriskdata<-cbind(coxalldata[,c(1,2)],coxallscore,coxallrisk)
+colnames(allriskdata)<-c("status","life_span","riskscore","risk")
+##总集生存分析和ROC曲线
+diff_all<-survdiff(Surv(life_span,status)~risk,data = allriskdata)
+p_valueall<-signif((1 - pchisq(diff_all$chisq,df=1)),3)
+p_valueall
+#fit_curve_all<-survfit(Surv(life_span,status)~risk,data = allriskdata)##生存曲线做图
+#plot(fit_curve_all,col=c("red","blue"),xlab = "time(years)",ylab = "survival rate",
+main="survival curve of entire set",mark.time=T)
+#legend(2,.4,paste("High risk (n=",nrow(allriskdata[allriskdata[,4]=="high",]),")",sep = ""),lty = NULL,text.col = "red",bty = "n")
+#legend(2,.3,paste("Low risk (n=",nrow(allriskdata[allriskdata[,4]=="low",]),")",sep = ""),lty = NULL,text.col = "blue",bty = "n")
+#legend(14,.2,paste("P value =",p_valueall,sep = ""),lty = NULL,col = "black",bty = "n")
+rocall<-survivalROC(Stime = allriskdata$life_span,status = allriskdata$status,marker = allriskdata$riskscore,
+                    predict.time = 5,method = "KM")
+#par(oma=c(0.5,1,0,1),font.lab=1.5,font.axis=1.5)
+#plot(rocall$FP, rocall$TP, type="l", xlim=c(0,1), ylim=c(0,1),col='red',
+xlab="1-Specificity",ylab="Sensitivity",main=paste("entire set ROC curve (AUC = 0.732)")
+)
+#abline(0,1)
+rocall$AUC
+##总集3，5年ROC曲线
+survivalROC_helper<-function(t){survivalROC(Stime = allriskdata$life_span,status = allriskdata$status,marker = allriskdata$riskscore,
+                                            predict.time = t,method = "KM")}
+survivalROC_data<-data_frame(t=c(3,5))%>%
+  mutate(survivalROC=map(t,survivalROC_helper),
+        auc=map_dbl(survivalROC,magrittr::extract2,"AUC"),
+        df_survivalROC=map(survivalROC,function(obj){
+          as.data.frame(obj[c("cut.values","TP","FP")])
+        }))%>%
+  dplyr::select(-survivalROC)%>%unnest()%>%arrange(t,FP,TP)
+survivalROC_data1<-survivalROC_data%>%mutate(auc=sprintf("%.3f",auc))%>%
+  unite(year,t,auc,sep = "year AUC: ")
+AUC=factor(survivalROC_data1$year)
+survivalROC_data1%>%ggplot(mapping = aes(x=FP,y=TP))+
+  geom_path(aes(colour=AUC))+
+  geom_abline(intercept = 0,slope = 1,linetype="dashed")+
+  theme_bw()+
+  theme(legend.position = c(0.8,0.2))
+print(k)
+print(p_valuetest)
+print(roctest$AUC)
+#if(p_valuetest<0.05&roctest$AUC>0.65){bresk;}
+##cc<-195
+#if(p_valuetest<0.05&roctest$AUC>0.65){save(k,file="k.Rdata");}
+if(p_valuetest<0.05&roctest$AUC>0.69){cc<-rbind(cc,k)
+pp<-rbind(pp,roctest$AUC)
+lengt<-rbind(lengt,length(coxgenename))
+View(lengt)
+View(pp)
+View(cc);}
+}
+}
+######找相关的编码蛋白基因
+coxsigLncname<-changgenename[changgenename$bbbb%in%rownames(multivar4_out),]##找到模型中的基因名
+allgeneannolength<-read.table("C:\\Users\\zhouwenqing789\\Desktop\\乳腺癌TCGA数据库20191226\\coxmodel_all_data\\allgene_length_rpkm.txt",header=T,sep="\t",stringsAsFactor=F)
+head(allgeneannolength)
+pcganno<-allgeneannolength[allgeneannolength$gene_type=="protein_coding",] ##提取蛋白编码基因的信息
+###计算蛋白编码基因的RPKM值
+shendu<-apply(count_matrix,2,sum)
+pcganno1<-pcganno[!duplicated(pcganno$symbol),]##除去基因名相同的基因
+count__matrix_pcg<-count_matrix[rownames(count_matrix)%in%pcganno1$ENSG,] ##从count矩阵中找出是蛋白编码基因的数据,发现注释文件中有一个基因count矩阵中没有
+head(count__matrix_pcg)[1:3]
+pcganno2<-pcganno1[pcganno1$ENSG%in%rownames(count__matrix_pcg),]####删除样本中没有注释信息的蛋白编码基因
+###一定要注意，蛋白编码基因的行顺序和基因注释文件的顺序一致，否则后面的基因长度就不能一一对应了。
+count__matrix_pcg1<-count__matrix_pcg[order(rownames(count__matrix_pcg)),]
+pcganno2<-pcganno2[order(pcganno2$ENSG),]
+head(count__matrix_pcg1)[1:3]
+head(pcganno2)
+dim(count__matrix_pcg1)
+pcg_len<-pcganno2$gene_length ##提取基因长度,
+colnames(count_matrix)[1:3]
+pcgrpkm<-count__matrix_pcg1
+for(leng in 1:ncol(pcgrpkm)){
+  pcgrpkm[,leng]<-pcgrpkm[,leng]*10^9/shendu[leng]/pcg_len
+
+}
+count_matrix_pcg_rpkm<-pcgrpkm
+save(count_matrix_pcg_rpkm,file = "count_matrix_pcg_rpkm.Rdata")
+save(count__matrix_pcg1,file = "count__matrix_pcg.Rdata")
+load(file = "C:/Users/zhouwenqing789/Desktop/乳腺癌TCGA数据库20191226/coxmodel_all_data/count__matrix_pcg.Rdata")
+load(file = "C:/Users/zhouwenqing789/Desktop/乳腺癌TCGA数据库20191226/coxmodel_all_data/count_matrix_pcg_rpkm.Rdata")
+getwd()
+#####提取蛋白编码基因的肿瘤临床信息。（可以借用LncRNA的临床信息的病例样本名，也就是从COX模型的数据中提取）
+count_matrix_pcg_rpkm_tumor<-count_matrix_pcg_rpkm[,substr(colnames(count_matrix_pcg_rpkm),14,15)=="01"]#找出肿瘤的
+hubb<-substr(colnames(count_matrix_pcg_rpkm_tumor),1,12)
+count_matrix_pcg_rpkm_tumor1<-count_matrix_pcg_rpkm_tumor[,!duplicated(hubb)] ##去掉重复的样本
+###计算出与COX模型中共表达的蛋白编码基因（需要的数据为模型中的基因在肿瘤样本中表达的RPKM值，蛋白编码基因在肿瘤中的rpkm值）
+modergene_rpkm<-coxdatarpkm1[,rownames(multivar4_out)]
+colnames(modergene_rpkm)<-coxsigLncname$colnames.difflncrna_rpkm24.##转换成基因名
+head(modergene_rpkm)
+##将蛋白编码进行ID转换（一定要查看顺序）
+head(count_matrix_pcg_rpkm_tumor1)[1:3]
+head(pcganno2)
+dim(count_matrix_pcg_rpkm_tumor1)
+dim(pcganno2)
+rownames(count_matrix_pcg_rpkm_tumor1)<-pcganno2$symbol###symbol之前也要除重，否则也不行
+colnames(count_matrix_pcg_rpkm_tumor1)<-substr(colnames(count_matrix_pcg_rpkm_tumor1),1,12)
+count_matrix_pcg_rpkm_tumor01<-count_matrix_pcg_rpkm_tumor1[rowMeans(count_matrix_pcg_rpkm_tumor1)>0.1,]##之前LncRNA也这样处理过。除掉一下表达很低的
+count_matrix_pcg_rpkm_tumor01<-t(count_matrix_pcg_rpkm_tumor01)
+head(count_matrix_pcg_rpkm_tumor01)[,1:3]
+count_matrix_pcg_rpkm_tumor01<-count_matrix_pcg_rpkm_tumor01[order(rownames(count_matrix_pcg_rpkm_tumor01)),]##排序，便于后面操作
+rownames(count_matrix_pcg_rpkm_tumor01)
+##spearman分析
+spearman_out<-data.frame(matrix(NA,ncol(count_matrix_pcg_rpkm_tumor01),ncol(modergene_rpkm)))
+colnames(spearman_out)<-colnames(modergene_rpkm)
+rownames(spearman_out)<-colnames(count_matrix_pcg_rpkm_tumor01)
+for (m in 1:ncol(modergene_rpkm)) {
+  spearman_out[,m]<-t(cor(modergene_rpkm[,m],count_matrix_pcg_rpkm_tumor01,method = "spearman"))
+}
+head(spearman_out)
+###spearman分析需要两者都不是正态分布，故这边不能Log化
+###如何将列表中内容输出
+out<-c()  ###创建一个空向量，横向输入的。
+m=1
+for (kk in 1:ncol(spearman_out)) {
+  cor_more0.4<-spearman_out[abs(spearman_out[,kk])>0.40,] ###注意 有些可能没有大于0.4的，故输出来没有数据,添加一个if语句。
+  if(nrow(cor_more0.4)!=0){
+    more_gene<-rownames(cor_more0.4)
+    for (gg in 1:length(more_gene)) {
+      out[m]<-more_gene[gg]
+      m=m+1
+
+    } 
+  }
+
+}
+coexpresspcg<-unique(out)      #########################################3##注意蛋白编码基因的总数
+write.table(coexpresspcg,file = "coexpresspcg.txt",sep = "\t",quote = F,row.names = F)
+####蛋白编码基因功能分析和可视化
+#options(BioC_mirror="https://mirrors.tuna.tsinghua.edu.cn/bioconductor")
+#BiocManager::install("org.Hs.eg.db")
+#BiocManager::install("clusterProfiler")
+#gene<-as.data.frame(coexpresspcg)
+##因为用这个包分析时，不能用基因名，故要转换ID
+#gene_id<-bitr(gene[,1]),fromType="SYMBOL",toType="ENTREZID",OrgDb=org.Hs.eg.db)
+###根据DAVID结果做GO分析
+x<-read.table(file = "C:\\Users\\zhouwenqing789\\Desktop\\乳腺癌TCGA数据库20191226\\coxmodel_all_data\\GOpcgdirect.txt",stringsAsFactor=F,header=T,sep="\t")
+head(x)
+x<-x[x$PValue<0.05,]
+x_go<-x[,1:5]
+dim(x)
+head(x_go)
+x_go1<-x_go[-82,]
+x_go<-x_go1
+dim(x_go)
+xbp<-x_go[grep("BP",x_go$Category),]
+xcc<-x_go[grep("CC",x_go$Category),]
+xmf<-x_go[grep("MF",x_go$Category),]
+xkegg<-x_go[grep("KEGG",x_go$Category),]
+##通过正则表达式将Term格式整理一下
+xbp$Term<-gsub(".*\\~","",xbp$Term)
+xcc$Term<-gsub(".*\\~","",xcc$Term)
+xmf$Term<-gsub(".*\\~","",xmf$Term)
+xkegg$Term<-gsub(".*\\:","",xkegg$Term)
+head(xbp)
+library(ggplot2)
+make_GO_bubble<-function(go_data,term_name){
+  #选择TOP10的数据（count）
+  GO_DATA<-go_data[order(go_data$Count,decreasing = T),]
+  GO_DATA<-head(GO_DATA,10)
+  #四维数据的展示
+  p<-ggplot(GO_DATA,aes(X.,Term))
+  bubble<-p+geom_point(aes(size=Count,color=-log(PValue)))
+  #自定义渐变颜色
+  bubble<-bubble+scale_color_gradient(low = "green",high = "red")
+  #改变图片的样式（主题）
+  pr<-bubble+theme_test(base_size = 12,base_rect_size = 1)
+  pr<-pr+labs(x="Geno ratio",y=term_name,title = "Enrichment of DEGS")
+  return(pr)
+}
+#BP
+make_GO_bubble(xbp,term_name = "Biological Process")
+make_GO_bubble(xcc,term_name = "Cell Component")
+make_GO_bubble(xmf,term_name = "Molecular Function")
+make_GO_bubble(xkegg,term_name = "KEGG pathway")
+# ggsave("KEEGbubble.pdf",width=9,height=7)
+##临床数据和risk score 一起单因素多因素分析
+###将临床信息和riskscore合并,一样分为训练集和数据集
+##第一步，将临床信息进行处理，比如年龄，stage，淋巴结等
+###插播一条 k-m曲线三部曲 基本流程Surv()/survfit()拟合/survdiff()差异
+##1 处理临床数据
+###1.1 整理临床数据，找出缺失值
+library(stringr)
+race<-ifelse(needclinicdata$race=="white",needclinicdata$race,"not white")
+path_m<-NULL
+for( t in 1:length(needclinicdata$ajcc_pathologic_m)){
+  if(str_detect(needclinicdata$ajcc_pathologic_m[t],"M0")){
+    path_m[t]<-0
+  }else{
+    if(str_detect(needclinicdata$ajcc_pathologic_m[t],"M1")){
+      path_m[t]<-1
+    }else{
+      path_m[t]<-"NA"
+    }
+  }
+}
+table(needclinicdata$ajcc_pathologic_n)
+path_n<-NULL
+for( t in 1:length(needclinicdata$ajcc_pathologic_n)){
+  if(str_detect(needclinicdata$ajcc_pathologic_n[t],"N0")){
+    path_n[t]<-0
+  }else{
+    if(str_detect(needclinicdata$ajcc_pathologic_n[t],"N1")){
+      path_n[t]<-1
+    }else{
+      if(str_detect(needclinicdata$ajcc_pathologic_n[t],"N2")){
+        path_n[t]<-2
+      }else{
+        if(str_detect(needclinicdata$ajcc_pathologic_n[t],"N3")){
+          path_n[t]<-3
+        }else{
+          path_n[t]<-"NA"}
+      }
+    }
+  }
+}
+table(needclinicdata$ajcc_pathologic_t)
+path_t<-NULL
+for (t in 1:length(needclinicdata$ajcc_pathologic_t)){
+  if(str_detect(needclinicdata$ajcc_pathologic_t[t],"T1")){
+    path_t[t]<-1
+  }else{
+    if(str_detect(needclinicdata$ajcc_pathologic_t[t],"T2")){
+      path_t[t]<-2
+    }else{
+      if(str_detect(needclinicdata$ajcc_pathologic_t[t],"T3")){
+        path_t[t]<-3
+      }else{
+        if(str_detect(needclinicdata$ajcc_pathologic_t[t],"T4")){
+          path_t[t]<-4
+        }else{
+          path_t[t]<-"NA"}
+      }
+    }
+  }
+}
+table(path_t)
+table(needclinicdata$tumor_stage)
+##注意stage不能用上面这种办法，因为分期是字母i ii iii
+path_stage<-NULL
+for (t in 1:length(needclinicdata$tumor_stage)){
+  if(needclinicdata$tumor_stage[t]=="stage i"|needclinicdata$tumor_stage[t]=="stage ia"|needclinicdata$tumor_stage[t]=="stage ib"){
+    path_stage[t]<-1
+  }else{
+    if(needclinicdata$tumor_stage[t]=="stage ii"|needclinicdata$tumor_stage[t]=="stage iia"|needclinicdata$tumor_stage[t]=="stage iib"){
+      path_stage[t]<-2
+    }else{
+      if(needclinicdata$tumor_stage[t]=="stage iii"|needclinicdata$tumor_stage[t]=="stage iiia"|needclinicdata$tumor_stage[t]=="stage iiib"|needclinicdata$tumor_stage[t]=="stage iiic"){
+      path_stage[t]<-3
+      }else{
+        if(needclinicdata$tumor_stage[t]=="stage iv"){
+          path_stage[t]<-4
+        }else{
+          path_stage[t]<-"NA"
+        }
+      }
+    }
+  }
+}
+table(path_stage)
+#1.1.1合并整理后的临床数据
+clindatainteg<-data.frame(needclinicdata$submitter_id,needclinicdata$vital_status,needclinicdata$days_to_death,needclinicdata$age_at_index,race,path_t,path_n,path_m,path_stage)
+clindatainteg[,2]<-ifelse(clindatainteg$needclinicdata.vital_status=="Alive",0,1)
+table(clindatainteg[,2])
+clindatainteg[,3]<-ifelse(is.na(as.numeric(clindatainteg$needclinicdata.days_to_death)),7455,as.numeric(clindatainteg$needclinicdata.days_to_death))
+clindatainteg[,5]<-ifelse(clindatainteg$race=="not white",1,0)
+table(clindatainteg$race)
+###1.2 保存数据并在excell中初步处理，删除一些缺失值
+write.csv(clindatainteg,file = "clindatainteg.csv",sep = ",",quote = F,col.names = T,row.names = F)
+clinicdata_no_na<-read.csv(file = "clindatanona.csv",header = T,sep = ",")
+colnames(clinicdata_no_na)[1]<-"subid"
+head(clinicdata_no_na)
+clinicdata_no_na<-clinicdata_no_na[order(clinicdata_no_na$subid),]
+clinicdata_no_na[,3]<-clinicdata_no_na[,3]/365
+###1.3整理临床数据，分为两个数据框，一个将t\n\m进行分组，并将年龄分为<50,.一个仅将年龄分组
+clinage1<-clinicdata_no_na
+#clinage1[,4]<-ifelse(clinage1[,4]<50,0,1)
+head(clinage1)
+#clinage_tnm1<-clinicdata_no_na
+#clinage_tnm1[,4]<-ifelse(clinage_tnm1[,4]<50,0,1)
+#clinage_tnm1[,6]<-ifelse(clinage_tnm1[,6]==1|clinage_tnm1[,6]==2,0,1)
+###################################  开始整合临床数据和风险模型数据
+##1.1.3 将临床数据和风险值合并,训练集/测试集/总集
+clinagetrain<-clinage1[clinage1$subid%in%rownames(trainriskdata),]
+clinagetest<-clinage1[clinage1$subid%in%rownames(testriskdata),]
+head(clinagetrain)
+head(trainriskdata)
+bindclin_risk_train<-cbind(clinagetrain,trainriskdata$riskscore,trainriskdata$risk)
+bindclin_risk_test<-cbind(clinagetest,testriskdata$riskscore,testriskdata$risk)
+rownames(bindclin_risk_train)<-bindclin_risk_train[,1]
+rownames(bindclin_risk_test)<-bindclin_risk_test[,1]
+bindclin_risk_train<-bindclin_risk_train[,-1]
+bindclin_risk_test<-bindclin_risk_test[,-1]
+##1.1.3.1总集的临床数据
+coxalldata<-cbind(sigcoxdata[,1:2],sigcoxdata[,coxgenename])
+head(coxalldata)
+coxallscore<-predict(cox_model,type = "risk",newdata = coxalldata)
+coxallrisk<-as.vector(ifelse(coxallscore>median(coxtrainscore),"high","low"))
+allriskdata<-cbind(coxalldata[,c(1,2)],coxallscore,coxallrisk)
+colnames(allriskdata)<-c("status","life_span","riskscore","risk")
+bindclin_risk_all<-cbind(clinage1,allriskdata$riskscore,allriskdata$risk)
+rownames(bindclin_risk_all)<-bindclin_risk_all$subid
+bindclin_risk_all<-bindclin_risk_all[,-1]
+bindclin_risk_all66<-bindclin_risk_all  #数据单独保存一下
+bindclin_risk_train66<-bindclin_risk_train    #数据单独保存一下
+bindclin_risk_test66<-bindclin_risk_test    #数据单独保存一下
+#出现错误，重新加载  bindclin_risk_all<-bindclin_risk_all66     
+#出现错误，重新加载  bindclin_risk_train<-bindclin_risk_train66
+#出现错误，重新加载  bindclin_risk_test<-bindclin_risk_test66
+head(bindclin_risk_all)
+dim(bindclin_risk_all)
+##2 进行单因素多因素回归分析
+##2.1单因素分析
+###2.1.1训练集单因素分析
+bindclin_risk_train<-bindclin_risk_train[,-9]
+#factor(bindclin_risk_train$`trainriskdata$risk`,ordered=T)
+#class(bindclin_risk_train$`trainriskdata$risk`)
+#levels(bindclin_risk_train$`trainriskdata$risk`)
+bindclin_risk_train$`trainriskdata$risk`<-factor(bindclin_risk_train$`trainriskdata$risk`,ordered=T,levels=c("low","high"))
+bindclin_risk_train[,9]<-as.numeric(bindclin_risk_train[,9])
+trainunivar1_out<-data.frame(matrix(NA,(ncol(bindclin_risk_train)-2),5))
+rownames(trainunivar1_out)<-colnames(bindclin_risk_train)[-c(1:2)]
+colnames(trainunivar1_out)<-c("Coeffcient","HR","lower.95","upper.95","P-Value")
+for (i in colnames(bindclin_risk_train)[-c(1:2)]) {
+  cox1<-coxph(Surv(life_span,status)~bindclin_risk_train[,i],data = bindclin_risk_train)
+  cox1_summary<-summary(cox1)
+  trainunivar1_out[i,1]<-cox1_summary$coefficients[,1]
+  trainunivar1_out[i,2]<-cox1_summary$coefficients[,2]
+  trainunivar1_out[i,3]<-cox1_summary$conf.int[,3]
+  trainunivar1_out[i,4]<-cox1_summary$conf.int[,4]
+  trainunivar1_out[i,5]<-cox1_summary$coefficients[,5]
+}
+trainuni001<-trainunivar1_out[trainunivar1_out$`P-Value`<0.01,]
+trainuni005<-trainunivar1_out[trainunivar1_out$`P-Value`<0.05,]
+##2.1.2 训练集多因素分析
+multrainsiggenename<-rownames(trainuni005)
+traincoxmultidata<-cbind(bindclin_risk_train[,c(1,2)],bindclin_risk_train[,multrainsiggenename])
+head(traincoxmultidata)
+traincoxmulti<-coxph(Surv(life_span,status)~.,data = traincoxmultidata)
+cox_sum1<-summary(traincoxmulti)
+trainmultivar1_out<-data.frame(matrix(NA,length(rownames(cox_sum1$coefficients)),5))
+rownames(trainmultivar1_out)<-rownames(cox_sum1$coefficients)
+colnames(trainmultivar1_out)<-c("Coeffcient","HR","lower.95","upper.95","P-Value")
+trainmultivar1_out[,1]<-cox_sum1$coefficients[,1]
+trainmultivar1_out[,2]<-cox_sum1$coefficients[,2]
+trainmultivar1_out[,3]<-cox_sum1$conf.int[,3]
+trainmultivar1_out[,4]<-cox_sum1$conf.int[,4]
+trainmultivar1_out[,5]<-cox_sum1$coefficients[,5]
+##2.2测试集单因素多因素分析
+bindclin_risk_test<-bindclin_risk_test[,-9]
+#factor(bindclin_risk_train$`trainriskdata$risk`,ordered=T)
+#class(bindclin_risk_train$`trainriskdata$risk`)
+#levels(bindclin_risk_train$`trainriskdata$risk`)
+bindclin_risk_test$`testriskdata$risk`<-factor(bindclin_risk_test$`testriskdata$risk`,ordered=T,levels=c("low","high"))
+bindclin_risk_test[,9]<-as.numeric(bindclin_risk_test[,9])
+testunivar2_out<-data.frame(matrix(NA,(ncol(bindclin_risk_test)-2),5))
+rownames(testunivar2_out)<-colnames(bindclin_risk_test)[-c(1:2)]
+colnames(testunivar2_out)<-c("Coeffcient","HR","lower.95","upper.95","P-Value")
+for (i in colnames(bindclin_risk_test)[-c(1:2)]) {
+  cox2<-coxph(Surv(life_span,status)~bindclin_risk_test[,i],data = bindclin_risk_test)
+  cox2_summary<-summary(cox2)
+  testunivar2_out[i,1]<-cox2_summary$coefficients[,1]
+  testunivar2_out[i,2]<-cox2_summary$coefficients[,2]
+  testunivar2_out[i,3]<-cox2_summary$conf.int[,3]
+  testunivar2_out[i,4]<-cox2_summary$conf.int[,4]
+  testunivar2_out[i,5]<-cox2_summary$coefficients[,5]
+}
+testuni001<-testunivar2_out[testunivar2_out$`P-Value`<0.01,]
+testuni005<-testunivar2_out[testunivar2_out$`P-Value`<0.05,]
+##2.2.2 测试集多因素分析
+multest_siggenename<-rownames(testuni005)
+testcoxmultidata<-cbind(bindclin_risk_test[,c(1,2)],bindclin_risk_test[,multest_siggenename])
+head(testcoxmultidata)
+testcoxmulti<-coxph(Surv(life_span,status)~.,data = testcoxmultidata)
+cox_sum2<-summary(testcoxmulti)
+testmultivar2_out<-data.frame(matrix(NA,length(rownames(cox_sum2$coefficients)),5))
+rownames(testmultivar2_out)<-rownames(cox_sum2$coefficients)
+colnames(testmultivar2_out)<-c("Coeffcient","HR","lower.95","upper.95","P-Value")
+testmultivar2_out[,1]<-cox_sum2$coefficients[,1]
+testmultivar2_out[,2]<-cox_sum2$coefficients[,2]
+testmultivar2_out[,3]<-cox_sum2$conf.int[,3]
+testmultivar2_out[,4]<-cox_sum2$conf.int[,4]
+testmultivar2_out[,5]<-cox_sum2$coefficients[,5]
+###2.3 总集单因素
+bindclin_risk_all<-bindclin_risk_all[,-9]
+#factor(bindclin_risk_train$`trainriskdata$risk`,ordered=T)
+#class(bindclin_risk_train$`trainriskdata$risk`)
+#levels(bindclin_risk_train$`trainriskdata$risk`)
+bindclin_risk_all$`allriskdata$risk`<-factor(bindclin_risk_all$`allriskdata$risk`,ordered=T,levels=c("low","high"))
+bindclin_risk_all[,9]<-as.numeric(bindclin_risk_all[,9])
+allunivar3_out<-data.frame(matrix(NA,(ncol(bindclin_risk_all)-2),5))
+rownames(allunivar3_out)<-colnames(bindclin_risk_all)[-c(1:2)]
+colnames(allunivar3_out)<-c("Coeffcient","HR","lower.95","upper.95","P-Value")
+for (i in colnames(bindclin_risk_all)[-c(1:2)]) {
+  cox3<-coxph(Surv(life_span,status)~bindclin_risk_all[,i],data = bindclin_risk_all)
+  cox3_summary<-summary(cox3)
+  allunivar3_out[i,1]<-cox3_summary$coefficients[,1]
+  allunivar3_out[i,2]<-cox3_summary$coefficients[,2]
+  allunivar3_out[i,3]<-cox3_summary$conf.int[,3]
+  allunivar3_out[i,4]<-cox3_summary$conf.int[,4]
+  allunivar3_out[i,5]<-cox3_summary$coefficients[,5]
+}
+alluni001<-allunivar3_out[allunivar3_out$`P-Value`<0.01,]
+alluni005<-allunivar3_out[allunivar3_out$`P-Value`<0.05,]
+##2.3.2 总集多因素分析
+mulall_siggenename<-rownames(alluni005)
+allcoxmultidata<-cbind(bindclin_risk_all[,c(1,2)],bindclin_risk_all[,mulall_siggenename])
+head(allcoxmultidata)
+allcoxmulti<-coxph(Surv(life_span,status)~.,data = allcoxmultidata)
+cox_sum3<-summary(allcoxmulti)
+allmultivar3_out<-data.frame(matrix(NA,length(rownames(cox_sum3$coefficients)),5))
+rownames(allmultivar3_out)<-rownames(cox_sum3$coefficients)
+colnames(allmultivar3_out)<-c("Coeffcient","HR","lower.95","upper.95","P-Value")
+allmultivar3_out[,1]<-cox_sum3$coefficients[,1]
+allmultivar3_out[,2]<-cox_sum3$coefficients[,2]
+allmultivar3_out[,3]<-cox_sum3$conf.int[,3]
+allmultivar3_out[,4]<-cox_sum3$conf.int[,4]
+allmultivar3_out[,5]<-cox_sum3$coefficients[,5]
+####临床资料分类
+head(bindclin_risk_train)
+table(bindclin_risk_train$path_n)
+allhigh<-bindclin_risk_all[bindclin_risk_all$`allriskdata$risk`==2,]
+alllow<-bindclin_risk_all[bindclin_risk_all$`allriskdata$risk`==1,]
+table(allhigh$age<50)
+table(alllow$age<50)
+table(allhigh$path_t)
+table(alllow$path_t)
+table(allhigh$path_n)
+table(alllow$path_n)
+table(allhigh$path_m)
+table(alllow$path_m)
+table(allhigh$path_stage)
+table(alllow$path_stage)
+table(allhigh$status)
+table(alllow$status)
+head(trainhigh)
+dim(trainlow)
+mean(bindclin_risk_all$life_span)
+max(bindclin_risk_all$life_span)
